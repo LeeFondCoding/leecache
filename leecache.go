@@ -3,8 +3,15 @@ package leecache
 
 import (
 	"fmt"
+	pb "leecache/leecachepb"
+	"leecache/singleflight"
 	"log"
 	"sync"
+)
+
+var (
+	mu     sync.RWMutex
+	groups = make(map[string]*Group)
 )
 
 type Group struct {
@@ -12,6 +19,8 @@ type Group struct {
 	getter    Getter // 缓存不存在，调用Get方法，得到源数据
 	mainCache cache
 	peers     PeerPicker
+	// 确保每个键只被访问一次
+	loader *singleflight.Group
 }
 
 type Getter interface {
@@ -25,11 +34,6 @@ func (f GetterFunc) Get(key string) ([]byte, error) {
 	return f(key)
 }
 
-var (
-	mu     sync.RWMutex
-	groups = make(map[string]*Group)
-)
-
 func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 	if getter == nil {
 		panic("nil Getter")
@@ -38,6 +42,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 		name:      name,
 		getter:    getter,
 		mainCache: cache{cacheBytes: cacheBytes},
+		loader:    &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -90,14 +95,19 @@ func (g *Group) populateCache(key string, value ByteView) {
 }
 
 func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
-	bytes, err := peer.Get(g.name, key)
+	req := &pb.Request{
+		Group: g.name,
+		Key:   key,
+	}
+	resp := &pb.Response{}
+	err := peer.Get(req, resp)
 	if err != nil {
 		return ByteView{}, err
 	}
-	return ByteView{b: bytes}, nil
+	return ByteView{b: resp.Value}, nil
 }
 
-func (g *Group)RegisterPeers(peers PeerPicker) {
+func (g *Group) RegisterPeers(peers PeerPicker) {
 	if g.peers != nil {
 		panic("RegisterPeerPicker called more than once")
 	}

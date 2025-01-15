@@ -30,7 +30,7 @@ func startCacheServer(addr string, addrs []string, group *leecache.Group) {
 	peers.Set(addrs...)
 	group.RegisterPeers(peers)
 	log.Println("leecache is running at", addr)
-	log.Fatal(http.ListenAndServe(addr[:7], peers))
+	log.Fatal(http.ListenAndServe(addr[7:], peers))
 }
 
 func startAPIServer(apiAddr string, group *leecache.Group) {

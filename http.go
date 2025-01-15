@@ -3,8 +3,10 @@ package leecache
 
 import (
 	"fmt"
+	"github.com/golang/protobuf/proto"
 	"io"
 	"leecache/consistenthash"
+	pb "leecache/leecachepb"
 	"log"
 	"net/http"
 	"net/url"
@@ -18,16 +20,16 @@ const (
 )
 
 type HttpPool struct {
-	self     string
-	basePath string
-	mu sync.Mutex
-	peers *consistenthash.Map
+	self        string
+	basePath    string
+	mu          sync.Mutex
+	peers       *consistenthash.Map
 	httpGetters map[string]*httpGetter
 }
 
 var _ PeerPicker = (*HttpPool)(nil)
 
-type httpGetter struct{
+type httpGetter struct {
 	baseURL string
 }
 
@@ -69,8 +71,15 @@ func (p *HttpPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	
+	body, err := proto.Marshal(&pb.Response{Value: view.ByteSlice()})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Write(view.ByteSlice())
+	w.Write(body)
 }
 
 // 传入其他节点的IP地址
@@ -95,26 +104,31 @@ func (p *HttpPool) PickPeer(key string) (PeerGetter, bool) {
 	return nil, false
 }
 
-func (h *httpGetter) Get(group string, key string) ([]byte, error) {
+// http请求其他节点的缓存
+func (h *httpGetter) Get(in *pb.Request, out *pb.Response) error {
 	u := fmt.Sprintf(
 		"%v%v/%v",
 		h.baseURL,
-		url.QueryEscape(group),
-		url.QueryEscape(key),
+		url.QueryEscape(in.GetGroup()),
+		url.QueryEscape(in.GetKey()),
 	)
 	resp, err := http.Get(u)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned: %v", resp.Status)
+		return fmt.Errorf("server returned: %v", resp.Status)
 	}
 
 	bytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading response body: %v", err)
+		return fmt.Errorf("reading response body: %v", err)
 	}
-	return bytes, nil
+
+	if err = proto.Unmarshal(bytes, out); err != nil {
+		return fmt.Errorf("decoding response body: %v", err)
+	}
+	return nil
 }
